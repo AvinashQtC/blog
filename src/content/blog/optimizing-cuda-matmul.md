@@ -2,7 +2,7 @@
 title: 'Optimizing CUDA Matrix Multiplication: From Naive to Register Tiling'
 description: 'A hands-on tour of four CUDA matmul kernels — naive, shared-memory tiled, 1D register-tiled, and 2D register-tiled — with benchmarks on a 1024×1024×1024 GEMM.'
 pubDate: 'Jul 13 2026'
-heroImage: '../../assets/blog-placeholder-4.jpg'
+heroImage: '../../assets/matmul-hero.png'
 ---
 
 Matrix multiplication is the "hello world" of GPU performance engineering: trivial to write correctly, and deceptively hard to write *fast*. A naive kernel and a well-tuned kernel can differ by an order of magnitude on the same GPU, doing the exact same math. This post walks through four progressively optimized CUDA kernels for `C = A × B` on 1024×1024×1024 `float32` matrices, benchmarking each one and explaining exactly which memory-access pattern it fixes.

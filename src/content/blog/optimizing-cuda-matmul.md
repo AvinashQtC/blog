@@ -5,9 +5,9 @@ pubDate: 'Jul 13 2026'
 heroImage: '../../assets/matmul-hero.png'
 ---
 
-Matrix multiplication is the "hello world" of GPU performance engineering: trivial to write correctly, and deceptively hard to write *fast*. A naive kernel and a well-tuned kernel can differ by an order of magnitude on the same GPU, doing the exact same math. This post walks through four progressively optimized CUDA kernels for `C = A × B` on 1024×1024×1024 `float32` matrices, benchmarking each one and explaining exactly which memory-access pattern it fixes.
+Matrix multiplication is often considered the "Hello, World!" of GPU performance engineering. It's straightforward to implement correctly, yet surprisingly challenging to optimize. On the same GPU, a naive implementation and a well-optimized kernel can differ by more than an order of magnitude in performance while producing exactly the same result.
 
-The full runnable code (naive → shared-memory tiling → 1D register tiling → 2D register tiling, plus a CPU reference and a benchmarking harness) is at the bottom of this post.
+As I began learning GPU programming, I found that the best way to deepen my understanding was to explain what I was learning. This blog is a result of that journey. In this post, I'll build and analyze four progressively optimized CUDA kernels for computing 'C = A × B' on '1024 × 1024' float32 matrices. We'll start with a naive implementation and then gradually introduce key optimization techniques: coalesced memory access, shared-memory tiling, 1D register tiling, and finally 2D register tiling. For each kernel, I'll use Nsight Compute ('ncu') to profile its performance and explain how each optimization improves the underlying memory-access pattern and overall efficiency.
 
 ## The setup
 

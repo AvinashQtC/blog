@@ -53,6 +53,23 @@ __global__ void naive_matmul(float *A, float *B, float *C, int m, int kk, int n)
 }
 ```
 
+Before looking at why this is slow, it's worth being precise about what `row` and `col` actually are. Every CUDA kernel launches a **grid** of **blocks**, and each block is a group of **threads** that run together and can share on-chip resources (that's what makes Stage 2 possible). Both the grid and the block can be up to 3-dimensional; matmul only needs `x` and `y`:
+
+- `blockDim` — the size of a block, fixed for the whole launch: how many threads it holds along `x` and `y`.
+- `blockIdx` — which block, out of the whole grid, the current thread belongs to.
+- `threadIdx` — where the current thread sits inside its own block.
+
+To get a thread's position in the *whole* problem, skip past all the earlier blocks (`blockIdx * blockDim`) and then add the thread's own offset inside its block (`+ threadIdx`):
+
+```cpp
+row = blockIdx.y * blockDim.y + threadIdx.y;
+col = blockIdx.x * blockDim.x + threadIdx.x;
+```
+
+![Diagram of the CUDA grid/block/thread hierarchy: a grid of blocks, a zoomed-in block of threads, the row/col formula combining blockIdx, blockDim, and threadIdx, and the resulting single output cell in matrix C](../../assets/grid-block-thread.png)
+
+For our 1024×1024 problem with 32×32 blocks, that's a 32×32 grid of blocks, each holding 1,024 threads — one thread per output element of `C`, matching the "Threads/block" and "Outputs/thread" columns in the [benchmark configs](#benchmark-harness) below.
+
 Each thread owns exactly one output element and walks the full K dimension to compute it. This is correct and embarrassingly parallel, but it's bandwidth-bound in the worst way: every thread reads its own row of `A` and column of `B` straight from **global memory**, on every iteration of the inner loop. Neighboring threads in a block re-read almost the same data from `A` and `B` independently — nothing is shared, nothing is cached deliberately. For a 1024³ problem that's a lot of redundant global-memory traffic, and global memory is the slowest thing on the chip.
 
 ## Stage 2: Shared-memory tiling — cache a block, reuse it

@@ -9,6 +9,25 @@ Matrix multiplication is often considered the "Hello, World!" of GPU performance
 
 As I began learning GPU programming, I found that the best way to deepen my understanding was to explain what I was learning. This blog is a result of that journey. In this post, I'll build and analyze four progressively optimized CUDA kernels for computing 'C = A × B' on '1024 × 1024' float32 matrices. We'll start with a naive implementation and then gradually introduce key optimization techniques: coalesced memory access, shared-memory tiling, 1D register tiling, and finally 2D register tiling. For each kernel, I'll use Nsight Compute ('ncu') to profile its performance and explain how each optimization improves the underlying memory-access pattern and overall efficiency.
 
+## Why matmul is O(N³) on the CPU
+
+Before touching the GPU, it's worth pausing on why matrix multiplication is expensive in the first place. The textbook CPU implementation is three nested loops:
+
+```cpp
+for (int i = 0; i < M; i++)
+    for (int j = 0; j < N; j++)
+        for (int p = 0; p < K; p++)
+            C[i][j] += A[i][p] * B[p][j];
+```
+
+Each of the `M*N` output elements is a dot product over `K` terms, so the total work is `O(M*N*K)` — or `O(N³)` for the square case (`M = N = K`) this post uses throughout. That cubic growth is exactly what makes matmul such a natural target for parallel hardware: the work grows far faster than the input size, but every multiply-add that makes it up is independent of every other one, so nothing stops them from running at the same time.
+
+A small example makes the operation count concrete. Take `A` as 3×4 and `B` as 4×3, so `C = A × B` comes out 3×3:
+
+![Diagram of a 3x4 matrix multiplied by a 4x3 matrix: computing one output element takes 4 multiplications and 3 additions, and the full 3x3 result takes 63 operations total](../../assets/matmul-complexity.png)
+
+`C` has `3 * 3 = 9` output elements, and each one is a dot product over the shared dimension `K = 4` — 4 multiplications, plus 3 additions to sum the 4 products together (one fewer addition than terms). That's `9 * 4 = 36` multiplications and `9 * 3 = 27` additions, 63 scalar operations total, from just `3*4 + 4*3 = 24` input numbers. Scale that same arithmetic up to `M = N = K = 1024` and you get over two billion multiply-adds for a single matmul — a workload that's both enormous and, because every output element is computed independently, embarrassingly parallel. That combination is exactly why matmul is the canonical GPU benchmark.
+
 ## The setup
 
 ```cpp

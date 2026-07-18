@@ -44,6 +44,8 @@ A GPU isn't one big processor — it's a collection of many independent processi
 
 Hardware always has a limited number of SMs. An NVIDIA L40, for example, has 142 of them. Our problem is 1024×1024, split into 32×32 tiles — that's `32 * 32 = 1,024` blocks in total, far more than 142 SMs can hold at once. So blocks don't all run simultaneously: the GPU schedules them onto SMs piece by piece, in waves, as each SM finishes its current block and frees up. Within an SM, that block's work is split further across its cores, and each core's slice of the block is identified by — you guessed it — a thread id.
 
+![Diagram showing 142 fixed SMs on an NVIDIA L40 next to a 32x32 grid of 1,024 blocks colored by scheduling wave, illustrating that blocks are scheduled onto SMs in about 8 waves rather than all running simultaneously](../../assets/sm-scheduling.png)
+
 CUDA exposes this two-level mapping (grid of blocks → block of threads) through three built-in variables, all up to 3-dimensional (matmul only needs `x` and `y`):
 
 - `blockDim` — the size of a block, fixed for the whole launch: how many threads it holds along `x` and `y`.

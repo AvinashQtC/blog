@@ -80,6 +80,39 @@ __global__ void naive_matmul(float *A, float *B, float *C, int m, int kk, int n)
 
 Each thread owns exactly one output element and walks the full K dimension to compute it. This is correct and embarrassingly parallel, but it's bandwidth-bound in the worst way: every thread reads its own row of `A` and column of `B` straight from **global memory**, on every iteration of the inner loop. Neighboring threads in a block re-read almost the same data from `A` and `B` independently — nothing is shared, nothing is cached deliberately. For a 1024³ problem that's a lot of redundant global-memory traffic, and global memory is the slowest thing on the chip.
 
+### A lower bound on runtime
+
+Before chasing optimizations, it's worth working out how fast this kernel could possibly go — a lower bound set by whichever of "how much arithmetic" or "how much data movement" turns out to be bigger.
+
+**FLOPs.** Each of the `1024 * 1024` entries of `C` is a dot product of two length-1,024 vectors: one multiply and one add per term. That multiply-add usually compiles down to a single FMA instruction, but it's still 2 floating-point operations. Total work:
+
+```
+2 * 1024³ ≈ 2.15 GFLOP
+```
+
+**Minimum memory traffic.** In the best possible case, every element of `A` and `B` is fetched from global memory exactly once, and every element of `C` is written exactly once — nothing is ever re-read:
+
+- read `A` and `B`: `2 * 1024² * 4B ≈ 8.4MB`
+- write `C`: `1024² * 4B ≈ 4.2MB`
+- floor: `≈ 12.6MB`
+
+No correct kernel can move less than that; it's a lower limit, not a target to aim for.
+
+The L40 is rated for 90.5 TFLOP/s of fp32 throughput and 864GB/s of memory bandwidth. Hitting both numbers exactly (generous, but useful as a bound) gives:
+
+- compute time: `2.15 GFLOP / 90.5 TFLOP/s ≈ 0.024 ms`
+- memory time: `12.6MB / 864GB/s ≈ 0.015 ms`
+
+Compute takes about `1.6×` longer than the minimum memory transfer, so an ideal kernel at this size would be *mildly* compute-bound — but only mildly. That margin is much thinner than the "compute dominates by 10×" result often quoted for matmul, and the reason is size: arithmetic intensity (FLOPs moved per byte) scales with the problem, since FLOPs grow as `N³` while bytes grow only as `N²`. A `1024³` problem sits much closer to the point where compute time and memory time are equal than a much larger one would. There's very little slack here — any kernel that moves meaningfully more than that ~12.6MB floor immediately falls behind the compute bound and becomes memory-bound instead.
+
+That's exactly what the naive kernel does. It has no reuse whatsoever: each of the `1024 * 1024` threads independently streams its own full row of `A` and column of `B` — `1,024 + 1,024` floats — straight from global memory, once per thread:
+
+```
+1,048,576 threads × 2,048 floats × 4B ≈ 8.6GB of reads
+```
+
+— roughly **680× more traffic** than the 12.6MB floor requires. Even at peak bandwidth, moving 8.6GB takes on the order of 10ms, against a 0.024ms compute-bound floor — three orders of magnitude apart. The naive kernel isn't slow because the GPU runs out of arithmetic throughput; it's slow because almost everything it reads is a repeat. Every optimization in the rest of this post is really just different ways of closing that gap between data moved and data actually needed.
+
 ## Stage 2: Shared-memory tiling — cache a block, reuse it
 
 ```cpp

@@ -195,40 +195,40 @@ The block shrinks from (32, 32) to (32, 4) — 128 threads instead of 1024 — b
 
 ## Stage 4: 2D register tiling — outer products in registers
 
-The natural extension: if owning multiple rows per thread helped, why not own a whole sub-tile? Each thread now computes a `TM × TM` = 8×8 block of the output using a classic **outer-product** update.
+The natural extension: if owning multiple rows per thread helped, why not own a whole sub-tile? Each thread now computes a `TM × TN` = 8×4 block of the output using a classic **outer-product** update. (`TN` is smaller than `TM` on purpose — a rectangular tile, not a square one; more on why below.)
 
 ```cpp
 __global__ void reg2D_TILE(float *A, float *B, float *C) {
-    __shared__ float As[TILE][TILE];
-    __shared__ float Bs[TILE][TILE];
+    __shared__ float As[TILE+1][TILE];   // padded so a column read doesn't
+    __shared__ float Bs[TILE][TILE+1];   // all land on the same memory bank
 
     int tx = threadIdx.x, ty = threadIdx.y;
     int row = blockIdx.y * TILE + ty * TM;
-    int col = blockIdx.x * TILE + tx * TM;
+    int col = blockIdx.x * TILE + tx * TN;
 
-    float acc[TM][TM] = {};
+    float acc[TM][TN] = {};
 
     for (int bk = 0; bk < K; bk += TILE) {
-        // cooperative load of As, Bs (each thread fills a TM×TM patch)
+        // cooperative load of As, Bs (each thread fills a TM×TN patch)
         // ...
         __syncthreads();
 
         for (int p = 0; p < TILE; p++) {
-            float regA[TM], regB[TM];
+            float regA[TM], regB[TN];
             for (int i = 0; i < TM; i++) regA[i] = As[ty*TM + i][p];
-            for (int j = 0; j < TM; j++) regB[j] = Bs[p][tx*TM + j];
+            for (int j = 0; j < TN; j++) regB[j] = Bs[p][tx*TN + j];
 
             for (int i = 0; i < TM; i++)
-                for (int j = 0; j < TM; j++)
+                for (int j = 0; j < TN; j++)
                     acc[i][j] += regA[i] * regB[j];   // pure register arithmetic
         }
         __syncthreads();
     }
-    // store acc[TM][TM] to C
+    // store acc[TM][TN] to C
 }
 ```
 
-Now the block is only (4, 4) = 16 threads, each doing 64 accumulators and an 8×8 outer product per k-step. The ratio of arithmetic to shared-memory traffic keeps climbing: per k-step, the thread does 2×TM shared-memory reads (`regA`, `regB`) to produce TM² = 64 fused multiply-adds. Compare that to stage 2, where every multiply-add cost two shared-memory reads. This is the same idea GPU BLAS libraries lean on hardest — maximize **arithmetic intensity** (FLOPs per byte moved) at every level of the memory hierarchy: global → shared → register.
+Now the block is (8, 4) = 32 threads, each doing 32 accumulators and an 8×4 outer product per k-step. Per k-step, the thread does `TM + TN` = 12 shared-memory reads (`regA`, `regB`) to produce `TM * TN` = 32 fused multiply-adds — still a big jump from stage 2's one-read-per-FMA, though a slightly lower ratio than a square 8×8 tile would give. That's a deliberate trade: `TN = 4` lines up exactly with a 128-bit `float4` load, which is what the vectorized-load kernel in the [full code](#full-code) below spends that shape on. This is the same idea GPU BLAS libraries lean on hardest — maximize **arithmetic intensity** (FLOPs per byte moved) at every level of the memory hierarchy: global → shared → register.
 
 ## Benchmark harness
 
@@ -262,7 +262,7 @@ Grid/block configs for each stage:
 | Naive | (32, 32) | 1024 | 1 |
 | Tiled-smem | (32, 32) | 1024 | 1 |
 | Reg1D | (32, 4) | 128 | 8 (1×8) |
-| Reg2D | (4, 4) | 16 | 64 (8×8) |
+| Reg2D | (8, 4) | 32 | 32 (8×4) |
 
 ## Results
 
